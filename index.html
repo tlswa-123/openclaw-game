@@ -157,9 +157,8 @@ function startFade(callback) {
 
 // --- Draw Player Sprite ---
 function drawPlayer(screenX) {
-  // Sprite sheets are swapped: "right" file faces left, "left" file faces right
-  const spriteKey = playerFacing === 1 ? 'char_walk_left_00001_.png' : 'char_walk_right_00001_.png';
-  const spriteImg = images[spriteKey];
+  // Use the left-facing sprite for both directions; flip canvas for right
+  const spriteImg = images['char_walk_left_00001_.png'];
   if (!spriteImg || !spriteImg.naturalWidth) return;
 
   const frameWidth = spriteImg.naturalWidth / 4;
@@ -167,7 +166,7 @@ function drawPlayer(screenX) {
   const sx = playerFrame * frameWidth;
 
   // Character height = 50% of canvas
-  const destH = GAME_H / 2; // 180px
+  const destH = GAME_H / 2;
   const destW = destH * (frameWidth / frameHeight);
 
   // Bobbing motion while walking
@@ -175,9 +174,18 @@ function drawPlayer(screenX) {
 
   // Position: moved up, bottom 40% of sprite below canvas edge
   const destY = GAME_H - destH * 0.6 + bob;
-  const destX = screenX - destW / 2;
 
-  ctx.drawImage(spriteImg, sx, 0, frameWidth, frameHeight, destX, destY, destW, destH);
+  ctx.save();
+  if (playerFacing === 1) {
+    // Facing right: flip horizontally around player center
+    ctx.translate(screenX, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(spriteImg, sx, 0, frameWidth, frameHeight, -destW / 2, destY, destW, destH);
+  } else {
+    // Facing left: draw normally
+    ctx.drawImage(spriteImg, sx, 0, frameWidth, frameHeight, screenX - destW / 2, destY, destW, destH);
+  }
+  ctx.restore();
 }
 
 // --- Resize ---
