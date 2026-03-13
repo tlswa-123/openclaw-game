@@ -20,7 +20,7 @@ const ctx = canvas.getContext('2d');
 const GAME_H = 360;
 const PLAYER_SPEED = 3;
 const TOTAL_CORRIDORS = 10;
-const ANOMALY_CHANCE = 0.6;
+const ANOMALY_CHANCE = 0.75;
 
 // --- State ---
 let gameState = 'loading';
@@ -131,14 +131,27 @@ function playSfx(correct) {
 }
 
 // --- Corridor Setup ---
+let anomalyPool = []; // shuffled pool to ensure all anomalies appear evenly
+
+function shuffleAnomalyPool() {
+  anomalyPool = [1,2,3,4,5,6,7,8,9,10];
+  for (let i = anomalyPool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [anomalyPool[i], anomalyPool[j]] = [anomalyPool[j], anomalyPool[i]];
+  }
+}
+shuffleAnomalyPool();
+
 function setupCorridor(corridorNum) {
   if (corridorNum === 1) {
     isAnomaly = false;
     currentMapImg = images['corridor_normal_00002_.png'];
+    shuffleAnomalyPool(); // reshuffle on reset
   } else {
     isAnomaly = Math.random() < ANOMALY_CHANCE;
     if (isAnomaly) {
-      const idx = Math.floor(Math.random() * 10) + 1;
+      if (anomalyPool.length === 0) shuffleAnomalyPool();
+      const idx = anomalyPool.pop();
       currentMapImg = images['corridor_anomaly' + idx + '_00001_.png'];
     } else {
       currentMapImg = images['corridor_normal_00002_.png'];
@@ -203,18 +216,20 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
+let stateChangeTime = 0; // prevent instant restart from held keys
+
 // --- Input ---
 window.addEventListener('keydown', e => {
   keys[e.key.toLowerCase()] = true;
   if (gameState === 'start') { initAudio(); gameState = 'fadein'; setupCorridor(1); fadeAlpha = 1; fadeDir = -1; }
-  if (gameState === 'gameover' || gameState === 'win') { initAudio(); currentCorridor = 1; gameState = 'fadein'; setupCorridor(1); fadeAlpha = 1; fadeDir = -1; }
+  if ((gameState === 'gameover' || gameState === 'win') && (Date.now() - stateChangeTime > 500)) { initAudio(); currentCorridor = 1; gameState = 'fadein'; setupCorridor(1); fadeAlpha = 1; fadeDir = -1; }
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
 canvas.addEventListener('touchstart', e => {
   e.preventDefault();
   initAudio();
-  if (gameState === 'start' || gameState === 'gameover' || gameState === 'win') {
+  if (gameState === 'start' || ((gameState === 'gameover' || gameState === 'win') && (Date.now() - stateChangeTime > 500))) {
     if (gameState !== 'start') currentCorridor = 1;
     gameState = 'fadein'; setupCorridor(currentCorridor); fadeAlpha = 1; fadeDir = -1;
     return;
@@ -261,14 +276,14 @@ function update() {
         playSfx(true);
         currentCorridor++;
         if (currentCorridor > TOTAL_CORRIDORS) {
-          startFade(() => { gameState = 'win'; });
+          startFade(() => { gameState = 'win'; stateChangeTime = Date.now(); });
         } else {
           startFade(() => { setupCorridor(currentCorridor); gameState = 'fadein'; fadeAlpha = 1; fadeDir = -1; });
         }
         gameState = 'fade';
       } else {
         playSfx(false);
-        startFade(() => { currentCorridor = 1; setupCorridor(1); gameState = 'gameover'; });
+        startFade(() => { currentCorridor = 1; setupCorridor(1); gameState = 'gameover'; stateChangeTime = Date.now(); });
         gameState = 'fade';
       }
     } else if (playerX > mapW + 20) {
@@ -276,14 +291,14 @@ function update() {
         playSfx(true);
         currentCorridor++;
         if (currentCorridor > TOTAL_CORRIDORS) {
-          startFade(() => { gameState = 'win'; });
+          startFade(() => { gameState = 'win'; stateChangeTime = Date.now(); });
         } else {
           startFade(() => { setupCorridor(currentCorridor); gameState = 'fadein'; fadeAlpha = 1; fadeDir = -1; });
         }
         gameState = 'fade';
       } else {
         playSfx(false);
-        startFade(() => { currentCorridor = 1; setupCorridor(1); gameState = 'gameover'; });
+        startFade(() => { currentCorridor = 1; setupCorridor(1); gameState = 'gameover'; stateChangeTime = Date.now(); });
         gameState = 'fade';
       }
     }
