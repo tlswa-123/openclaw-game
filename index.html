@@ -1,414 +1,467 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
-<title>回家路 - The Way Home</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>回家路</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#111;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden}
-canvas{image-rendering:pixelated;image-rendering:crisp-edges;max-width:100vw;max-height:100vh;cursor:none}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; touch-action: none; }
+canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <script>
-const W=480,H=320,SCALE=2;
-const canvas=document.getElementById('c');
-canvas.width=W;canvas.height=H;
-canvas.style.width=W*SCALE+'px';canvas.style.height=H*SCALE+'px';
-const ctx=canvas.getContext('2d');
-ctx.imageSmoothingEnabled=false;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
 
-// Audio
-const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-function playTone(freq,dur,type='square',vol=0.08){
-  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
-  o.type=type;o.frequency.value=freq;g.gain.value=vol;
-  o.connect(g);g.connect(audioCtx.destination);
-  o.start();g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
-  o.stop(audioCtx.currentTime+dur);
-}
-function sfxStep(){playTone(80+Math.random()*40,0.06,'square',0.04)}
-function sfxCorrect(){playTone(440,0.1);setTimeout(()=>playTone(660,0.15),100)}
-function sfxWrong(){playTone(200,0.3,'sawtooth',0.1);setTimeout(()=>playTone(150,0.4,'sawtooth',0.08),200)}
-function sfxWin(){[0,100,200,300,400].forEach((d,i)=>setTimeout(()=>playTone([523,659,784,1047,1319][i],0.3,'square',0.06),d))}
+// --- Constants ---
+const GAME_H = 360;
+const PLAYER_SPEED = 3;
+const TOTAL_CORRIDORS = 10;
+const ANOMALY_CHANCE = 0.6;
 
-// Ambient drone
-let ambientOn=false;
-function startAmbient(){
-  if(ambientOn)return;ambientOn=true;
-  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
-  o.type='sine';o.frequency.value=55;g.gain.value=0.015;
-  o.connect(g);g.connect(audioCtx.destination);o.start();
-  const o2=audioCtx.createOscillator(),g2=audioCtx.createGain();
-  o2.type='sine';o2.frequency.value=82.5;g2.gain.value=0.01;
-  o2.connect(g2);g2.connect(audioCtx.destination);o2.start();
-}
+// --- State ---
+let gameState = 'loading'; // loading, start, playing, fadein, gameover, win
+let currentCorridor = 1;
+let isAnomaly = false;
+let currentMapImg = null;
+let playerX = 0;
+let playerFacing = 1; // 1=right, -1=left
+let playerFrame = 0;
+let frameTimer = 0;
+let isMoving = false;
+let fadeAlpha = 0;
+let fadeDir = 0; // 1=fading out, -1=fading in
+let nextAction = null;
+let gameW = 0;
+let mapW = 0;
+let keys = {};
+let touchSide = 0; // -1 left, 1 right, 0 none
+let messageText = '';
+let messageTimer = 0;
+let ambientNode = null;
+let ambientGain = null;
+let audioCtx = null;
 
-// Game state
-let state='title'; // title, playing, decision, gameover, win
-let corridor=1, playerX=40, walkFrame=0, walkTimer=0;
-let hasAnomaly=false, activeAnomaly=-1;
-let fadeAlpha=0, fadeDir=0, nextState='', msgTimer=0, msgText='';
-let stepTimer=0;
-
-// Colors
-const C={
-  ceil:'#3a4a3a',floor:'#5a5a50',wall:'#6a7a6a',wallDark:'#505a50',
-  light:'#eeeea0',lightOff:'#4a4a40',door:'#8a6a4a',doorAlt:'#4a6a8a',
-  window:'#7a9aaa',windowFrame:'#4a5a4a',poster:'#aa8866',
-  locker:'#5a6a7a',trash:'#4a4a4a',tile1:'#5a5a50',tile2:'#525248',
-  skin:'#f0c8a0',hair:'#2a1a10',uniform:'#3a4a6a',skirt:'#2a3a5a',
-  sock:'#e0e0e0',shoe:'#1a1a1a'
-};
-
-// Anomaly types
-const ANOMALY_TYPES=[
-  'missing_light',    // one fluorescent light is off
-  'extra_window',     // extra window added
-  'wall_crack',       // crack in the wall
-  'door_color',       // door is blue instead of brown
-  'clock_wrong',      // clock hands at wrong angle
-  'extra_poster',     // extra poster on wall
-  'missing_trash',    // trash can is gone
-  'locker_open',      // one locker is slightly open
-  'ceiling_stain',    // dark stain on ceiling
-  'floor_crack',      // crack in floor tiles
+// --- Images ---
+const imgNames = [
+  'corridor_normal_00002_.png',
+  'corridor_anomaly1_00001_.png','corridor_anomaly2_00001_.png','corridor_anomaly3_00001_.png',
+  'corridor_anomaly4_00001_.png','corridor_anomaly5_00001_.png','corridor_anomaly6_00001_.png',
+  'corridor_anomaly7_00001_.png','corridor_anomaly8_00001_.png','corridor_anomaly9_00001_.png',
+  'corridor_anomaly10_00001_.png'
 ];
+const images = {};
+let loadedCount = 0;
 
-function resetCorridor(){
-  playerX=40;walkFrame=0;
-  if(corridor===1){hasAnomaly=false;activeAnomaly=-1;}
-  else{
-    hasAnomaly=Math.random()<0.6;
-    activeAnomaly=hasAnomaly?ANOMALY_TYPES[Math.floor(Math.random()*ANOMALY_TYPES.length)]:-1;
-  }
-}
-
-function startGame(){
-  corridor=1;state='playing';
-  resetCorridor();startAmbient();
-  audioCtx.resume();
-}
-
-// Drawing functions
-function drawRect(x,y,w,h,color){ctx.fillStyle=color;ctx.fillRect(Math.floor(x),Math.floor(y),w,h);}
-
-function drawCorridor(){
-  // Background wall
-  drawRect(0,0,W,H,C.ceil);
-  // Ceiling
-  drawRect(0,0,W,80,C.ceil);
-  // Wall
-  drawRect(0,80,W,140,C.wall);
-  // Wall trim line
-  drawRect(0,78,W,2,'#4a5a4a');
-  drawRect(0,218,W,2,'#4a5a4a');
-  // Floor
-  for(let x=0;x<W;x+=24){
-    for(let y=220;y<H;y+=16){
-      drawRect(x,y,12,16,C.tile1);
-      drawRect(x+12,y,12,16,C.tile2);
-    }
-  }
-  // Floor anomaly
-  if(activeAnomaly==='floor_crack'){
-    ctx.fillStyle='#2a2a20';
-    ctx.fillRect(200,230,2,20);ctx.fillRect(202,235,8,2);ctx.fillRect(210,232,2,12);
-  }
-
-  // Fluorescent lights on ceiling
-  const lights=[60,160,260,360];
-  lights.forEach((lx,i)=>{
-    const isOff=(activeAnomaly==='missing_light'&&i===2);
-    drawRect(lx,20,40,6,isOff?C.lightOff:C.light);
-    drawRect(lx-2,18,2,10,'#3a3a3a');
-    drawRect(lx+40,18,2,10,'#3a3a3a');
-    if(!isOff){
-      ctx.fillStyle='rgba(238,238,160,0.03)';
-      ctx.fillRect(lx-10,26,60,60);
-    }
+function preload() {
+  imgNames.forEach(name => {
+    const img = new Image();
+    img.onload = () => { loadedCount++; if (loadedCount === imgNames.length) { gameState = 'start'; } };
+    img.onerror = () => { loadedCount++; if (loadedCount === imgNames.length) { gameState = 'start'; } };
+    img.src = 'maps/' + name;
+    images[name] = img;
   });
-
-  // Ceiling stain anomaly
-  if(activeAnomaly==='ceiling_stain'){
-    ctx.fillStyle='#2a3a2a';
-    ctx.fillRect(300,40,20,12);ctx.fillRect(305,36,10,20);ctx.fillRect(310,44,14,6);
-  }
-
-  // Windows
-  const winPositions=[80,240];
-  if(activeAnomaly==='extra_window')winPositions.push(380);
-  winPositions.forEach(wx=>{
-    drawRect(wx,100,50,60,C.window);
-    drawRect(wx,100,50,2,C.windowFrame);
-    drawRect(wx,158,50,2,C.windowFrame);
-    drawRect(wx,100,2,60,C.windowFrame);
-    drawRect(wx+48,100,2,60,C.windowFrame);
-    drawRect(wx+24,100,2,60,C.windowFrame);
-    drawRect(wx,128,50,2,C.windowFrame);
-    // Sky through window
-    drawRect(wx+2,102,22,26,'#8aaabb');
-    drawRect(wx+26,102,22,26,'#8aaabb');
-    drawRect(wx+2,130,22,28,'#8aaabb');
-    drawRect(wx+26,130,22,28,'#8aaabb');
-  });
-
-  // Door
-  const doorX=180;
-  const doorColor=(activeAnomaly==='door_color')?C.doorAlt:C.door;
-  drawRect(doorX,110,36,108,doorColor);
-  drawRect(doorX,110,36,2,'#3a3a3a');
-  drawRect(doorX,110,2,108,'#3a3a3a');
-  drawRect(doorX+34,110,2,108,'#3a3a3a');
-  drawRect(doorX+28,158,4,4,'#daa520'); // doorknob
-  // Door frame
-  drawRect(doorX-2,108,2,112,'#4a5a4a');
-  drawRect(doorX+36,108,2,112,'#4a5a4a');
-  drawRect(doorX-2,108,40,2,'#4a5a4a');
-
-  // Lockers
-  const lockerX=330;
-  for(let i=0;i<3;i++){
-    const lx=lockerX+i*18;
-    drawRect(lx,110,16,108,C.locker);
-    drawRect(lx,110,16,2,'#4a5a6a');
-    drawRect(lx,110,1,108,'#4a5a6a');
-    drawRect(lx+15,110,1,108,'#4a5a6a');
-    drawRect(lx+7,150,2,4,'#aaa');
-    // Locker open anomaly
-    if(activeAnomaly==='locker_open'&&i===1){
-      drawRect(lx+14,110,6,108,'#5a6a7a');
-      drawRect(lx+14,110,6,2,'#4a5a6a');
-      drawRect(lx+19,110,1,108,'#3a4a5a');
-    }
-  }
-
-  // Poster
-  drawRect(140,120,20,26,C.poster);
-  drawRect(140,120,20,2,'#6a5a4a');
-  // Simple drawing on poster
-  drawRect(144,126,4,4,'#cc4444');
-  drawRect(150,128,6,8,'#4444cc');
-
-  // Extra poster anomaly
-  if(activeAnomaly==='extra_poster'){
-    drawRect(290,120,20,26,'#aa6688');
-    drawRect(290,120,20,2,'#6a4a5a');
-    drawRect(294,126,12,6,'#44aa44');
-    drawRect(296,134,8,8,'#aaaa44');
-  }
-
-  // Wall crack anomaly
-  if(activeAnomaly==='wall_crack'){
-    ctx.fillStyle='#3a4a3a';
-    ctx.fillRect(270,100,2,30);ctx.fillRect(272,110,6,2);
-    ctx.fillRect(278,108,2,16);ctx.fillRect(268,120,2,14);
-  }
-
-  // Clock on wall
-  const clockX=400,clockY=100;
-  drawRect(clockX,clockY,16,16,'#eee');
-  drawRect(clockX,clockY,16,1,'#333');
-  drawRect(clockX,clockY+15,16,1,'#333');
-  drawRect(clockX,clockY,1,16,'#333');
-  drawRect(clockX+15,clockY,1,16,'#333');
-  // Clock hands
-  drawRect(clockX+7,clockY+4,2,5,'#111'); // hour hand (12 o'clock-ish)
-  if(activeAnomaly==='clock_wrong'){
-    drawRect(clockX+8,clockY+7,6,2,'#111'); // minute pointing right (wrong)
-  }else{
-    drawRect(clockX+7,clockY+3,2,6,'#111'); // minute also ~12
-  }
-  drawRect(clockX+7,clockY+7,2,2,'#c00'); // center dot
-
-  // Trash can
-  if(activeAnomaly!=='missing_trash'){
-    const tx=420;
-    drawRect(tx,196,16,22,C.trash);
-    drawRect(tx-1,194,18,4,'#5a5a5a');
-    drawRect(tx+2,198,4,2,'#3a3a3a');
-    drawRect(tx+8,198,4,2,'#3a3a3a');
-  }
-
-  // Baseboard
-  drawRect(0,216,W,4,'#4a4a3a');
 }
 
-function drawPlayer(x){
-  const frame=walkFrame;
-  const px=Math.floor(x),py=180;
-  // Legs animation
-  const legOff=frame===0?0:(frame===1?2:-2);
-  // Hair
-  drawRect(px+2,py,12,4,C.hair);
-  drawRect(px+1,py+2,14,6,C.hair);
-  drawRect(px+10,py+4,6,8,C.hair); // long hair back
-  drawRect(px+12,py+8,4,10,C.hair);
-  // Head/face
-  drawRect(px+3,py+4,8,8,C.skin);
-  drawRect(px+4,py+7,2,2,'#1a1a1a'); // eye
-  // Body/uniform
-  drawRect(px+3,py+12,10,10,C.uniform);
-  drawRect(px+2,py+14,3,8,C.uniform); // arm
-  drawRect(px+11,py+14,3,8,C.uniform); // arm
-  // Skirt
-  drawRect(px+2,py+22,12,6,C.skirt);
+// --- Audio ---
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  startAmbient();
+}
+
+function startAmbient() {
+  if (!audioCtx || ambientNode) return;
+  // Eerie drone using oscillators
+  ambientGain = audioCtx.createGain();
+  ambientGain.gain.value = 0.06;
+  ambientGain.connect(audioCtx.destination);
+  const osc1 = audioCtx.createOscillator();
+  osc1.type = 'sine'; osc1.frequency.value = 55;
+  const osc2 = audioCtx.createOscillator();
+  osc2.type = 'sine'; osc2.frequency.value = 57.5;
+  const osc3 = audioCtx.createOscillator();
+  osc3.type = 'sawtooth'; osc3.frequency.value = 110;
+  const g3 = audioCtx.createGain(); g3.gain.value = 0.015; osc3.connect(g3); g3.connect(ambientGain);
+  osc1.connect(ambientGain); osc2.connect(ambientGain);
+  osc1.start(); osc2.start(); osc3.start();
+  ambientNode = { osc1, osc2, osc3 };
+}
+
+let lastFootstep = 0;
+function playFootstep() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  if (now - lastFootstep < 0.28) return;
+  lastFootstep = now;
+  const buf = audioCtx.createBufferSource();
+  const buffer = audioCtx.createBuffer(1, 1200, audioCtx.sampleRate);
+  const d = buffer.getChannelData(0);
+  for (let i = 0; i < d.length; i++) {
+    d[i] = (Math.random() * 2 - 1) * Math.exp(-i / 300) * 0.3;
+  }
+  buf.buffer = buffer;
+  const f = audioCtx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 800;
+  buf.connect(f); f.connect(audioCtx.destination);
+  buf.start();
+}
+
+function playSfx(correct) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.connect(g); g.connect(audioCtx.destination);
+  if (correct) {
+    osc.type = 'square'; osc.frequency.value = 520; g.gain.value = 0.12;
+    osc.frequency.setValueAtTime(520, audioCtx.currentTime);
+    osc.frequency.linearRampToValueAtTime(780, audioCtx.currentTime + 0.15);
+    g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+  } else {
+    osc.type = 'sawtooth'; osc.frequency.value = 200; g.gain.value = 0.15;
+    osc.frequency.linearRampToValueAtTime(80, audioCtx.currentTime + 0.4);
+    g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+  }
+}
+
+// --- Corridor Setup ---
+function setupCorridor(corridorNum) {
+  if (corridorNum === 1) {
+    isAnomaly = false;
+    currentMapImg = images['corridor_normal_00002_.png'];
+  } else {
+    isAnomaly = Math.random() < ANOMALY_CHANCE;
+    if (isAnomaly) {
+      const idx = Math.floor(Math.random() * 10) + 1;
+      currentMapImg = images['corridor_anomaly' + idx + '_00001_.png'];
+    } else {
+      currentMapImg = images['corridor_normal_00002_.png'];
+    }
+  }
+  mapW = currentMapImg.naturalWidth;
+  // Player starts at center of map
+  playerX = mapW / 2;
+  playerFacing = 1;
+  playerFrame = 0;
+  isMoving = false;
+}
+
+function startFade(callback) {
+  fadeAlpha = 0; fadeDir = 1; nextAction = callback;
+}
+
+// --- Player Drawing (pixel art schoolgirl ~64px tall) ---
+function drawPixelRect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(Math.round(x), Math.round(y), w, h);
+}
+
+function drawPlayer(sx, sy, facing, frame) {
+  // ~64px tall schoolgirl: hair, face, uniform, skirt, legs
+  const f = facing;
+  const x = Math.round(sx);
+  const y = Math.round(sy);
+  // Walking bob
+  const bob = isMoving ? [0, -2, 0][frame % 3] : 0;
+  const legOff = isMoving ? [0, 3, 0][frame % 3] : 0;
+  const legOff2 = isMoving ? [3, 0, 3][frame % 3] : 0;
+
+  // Shadow
+  drawPixelRect(x - 10, y + 64, 20, 3, 'rgba(0,0,0,0.2)');
+
+  // Hair (dark brown/black) - back layer
+  drawPixelRect(x - 12, y + bob - 2, 24, 22, '#1a1a2e');
+  // Long hair sides
+  drawPixelRect(x - 13, y + bob + 10, 6, 20, '#1a1a2e');
+  drawPixelRect(x + 7, y + bob + 10, 6, 20, '#1a1a2e');
+
+  // Face (skin)
+  drawPixelRect(x - 8, y + bob + 6, 16, 14, '#f5d0a9');
+  // Eyes
+  if (f === 1) {
+    drawPixelRect(x + 1, y + bob + 11, 4, 4, '#1a1a2e');
+    drawPixelRect(x + 2, y + bob + 12, 2, 2, '#fff');
+    drawPixelRect(x - 5, y + bob + 11, 4, 4, '#1a1a2e');
+    drawPixelRect(x - 4, y + bob + 12, 2, 2, '#fff');
+  } else {
+    drawPixelRect(x - 5, y + bob + 11, 4, 4, '#1a1a2e');
+    drawPixelRect(x - 4, y + bob + 12, 2, 2, '#fff');
+    drawPixelRect(x + 1, y + bob + 11, 4, 4, '#1a1a2e');
+    drawPixelRect(x, y + bob + 12, 2, 2, '#fff');
+  }
+  // Mouth
+  drawPixelRect(x - 2, y + bob + 17, 4, 1, '#c97060');
+
+  // Hair bangs (front)
+  drawPixelRect(x - 10, y + bob - 2, 20, 8, '#1a1a2e');
+  drawPixelRect(x - 12, y + bob + 2, 4, 6, '#1a1a2e');
+  drawPixelRect(x + 8, y + bob + 2, 4, 6, '#1a1a2e');
+
+  // Neck
+  drawPixelRect(x - 3, y + bob + 20, 6, 3, '#f5d0a9');
+
+  // Uniform top (white shirt with sailor collar)
+  drawPixelRect(x - 12, y + bob + 22, 24, 16, '#e8e8f0');
+  // Collar (navy)
+  drawPixelRect(x - 12, y + bob + 22, 24, 5, '#2d3a6e');
+  drawPixelRect(x - 6, y + bob + 22, 12, 8, '#e8e8f0');
+  // Ribbon (red)
+  drawPixelRect(x - 2, y + bob + 24, 4, 6, '#cc3333');
+
+  // Arms
+  const armY = y + bob + 26;
+  drawPixelRect(x - 15, armY + legOff, 4, 14, '#e8e8f0');
+  drawPixelRect(x + 11, armY + legOff2, 4, 14, '#e8e8f0');
+  // Hands
+  drawPixelRect(x - 15, armY + 14 + legOff, 4, 3, '#f5d0a9');
+  drawPixelRect(x + 11, armY + 14 + legOff2, 4, 3, '#f5d0a9');
+
+  // Skirt (navy pleated)
+  drawPixelRect(x - 13, y + bob + 38, 26, 10, '#2d3a6e');
+  drawPixelRect(x - 14, y + bob + 42, 28, 6, '#2d3a6e');
+  // Pleat lines
+  for (let i = -10; i <= 10; i += 5) {
+    drawPixelRect(x + i, y + bob + 39, 1, 9, '#222a55');
+  }
+
   // Legs
-  drawRect(px+4,py+28,3,6,C.sock);
-  drawRect(px+9,py+28,3,6,C.sock);
-  drawRect(px+4+legOff,py+34,3,4,C.shoe);
-  drawRect(px+9-legOff,py+34,3,4,C.shoe);
+  drawPixelRect(x - 8, y + bob + 48 + legOff, 5, 12, '#f5d0a9');
+  drawPixelRect(x + 3, y + bob + 48 + legOff2, 5, 12, '#f5d0a9');
+  // Socks (white)
+  drawPixelRect(x - 8, y + bob + 55 + legOff, 5, 5, '#fff');
+  drawPixelRect(x + 3, y + bob + 55 + legOff2, 5, 5, '#fff');
+  // Shoes (brown)
+  drawPixelRect(x - 9, y + bob + 60 + legOff, 7, 4, '#5c3a1e');
+  drawPixelRect(x + 2, y + bob + 60 + legOff2, 7, 4, '#5c3a1e');
 }
 
-function drawText(text,x,y,color='#fff',size=8){
-  ctx.fillStyle=color;
-  ctx.font=size+'px monospace';
-  ctx.fillText(text,x,y);
+// --- Resize ---
+function resize() {
+  const aspect = 1024 / GAME_H;
+  let w = window.innerWidth;
+  let h = window.innerHeight;
+  if (w / h > aspect) { w = h * aspect; } else { h = w / aspect; }
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  gameW = 1024;
+  canvas.width = gameW;
+  canvas.height = GAME_H;
 }
+window.addEventListener('resize', resize);
+resize();
 
-function drawTextCenter(text,y,color='#fff',size=10){
-  ctx.font=size+'px monospace';
-  const m=ctx.measureText(text);
-  ctx.fillStyle=color;
-  ctx.fillText(text,(W-m.width)/2,y);
-}
-
-// Input
-const keys={};
-document.addEventListener('keydown',e=>{
-  keys[e.key]=true;
-  if(state==='title'){startGame();return;}
-  if(state==='gameover'||state==='win'){startGame();return;}
-  if(state==='decision'){
-    if(e.key==='ArrowRight'||e.key==='d'||e.key==='D'){
-      decide('forward');
-    }else if(e.key==='ArrowLeft'||e.key==='a'||e.key==='A'||e.key==='ArrowUp'||e.key==='w'||e.key==='W'){
-      decide('back');
-    }
-  }
+// --- Input ---
+window.addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  if (gameState === 'start') { initAudio(); gameState = 'fadein'; setupCorridor(1); fadeAlpha = 1; fadeDir = -1; }
+  if (gameState === 'gameover' || gameState === 'win') { initAudio(); currentCorridor = 1; gameState = 'fadein'; setupCorridor(1); fadeAlpha = 1; fadeDir = -1; }
 });
-document.addEventListener('keyup',e=>keys[e.key]=false);
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
-// Touch
-canvas.addEventListener('touchstart',e=>{
+canvas.addEventListener('touchstart', e => {
   e.preventDefault();
-  audioCtx.resume();
-  if(state==='title'){startGame();return;}
-  if(state==='gameover'||state==='win'){startGame();return;}
-  const rect=canvas.getBoundingClientRect();
-  const tx=e.touches[0].clientX-rect.left;
-  if(state==='decision'){
-    if(tx<rect.width/2)decide('back');
-    else decide('forward');
+  initAudio();
+  if (gameState === 'start' || gameState === 'gameover' || gameState === 'win') {
+    if (gameState !== 'start') currentCorridor = 1;
+    gameState = 'fadein'; setupCorridor(currentCorridor); fadeAlpha = 1; fadeDir = -1;
+    return;
   }
-},{passive:false});
+  const rect = canvas.getBoundingClientRect();
+  const tx = (e.touches[0].clientX - rect.left) / rect.width;
+  touchSide = tx < 0.5 ? -1 : 1;
+});
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const tx = (e.touches[0].clientX - rect.left) / rect.width;
+  touchSide = tx < 0.5 ? -1 : 1;
+});
+canvas.addEventListener('touchend', e => { e.preventDefault(); touchSide = 0; });
+canvas.addEventListener('touchcancel', e => { touchSide = 0; });
 
-function decide(choice){
-  if(choice==='back'){
-    if(hasAnomaly){correct();}else{wrong();}
-  }else{
-    if(!hasAnomaly){correct();}else{wrong();}
-  }
-}
+// --- Game Loop ---
+function update() {
+  if (gameState === 'playing') {
+    let dx = 0;
+    if (keys['a'] || keys['arrowleft'] || touchSide === -1) dx -= PLAYER_SPEED;
+    if (keys['d'] || keys['arrowright'] || touchSide === 1) dx += PLAYER_SPEED;
 
-function correct(){
-  sfxCorrect();
-  corridor++;
-  if(corridor>10){state='win';sfxWin();return;}
-  msgText='正确！进入走廊 '+corridor;msgTimer=60;
-  state='playing';resetCorridor();
-}
-function wrong(){
-  sfxWrong();
-  state='gameover';msgTimer=120;
-  if(hasAnomaly)msgText='你没有发现异常...';
-  else msgText='这里没有异常，不需要回头！';
-}
+    isMoving = dx !== 0;
+    if (dx < 0) playerFacing = -1;
+    if (dx > 0) playerFacing = 1;
 
-// Game loop
-let lastTime=0;
-function loop(time){
-  const dt=Math.min(time-lastTime,33);lastTime=time;
-
-  ctx.fillStyle='#111';ctx.fillRect(0,0,W,H);
-
-  if(state==='title'){
-    drawRect(0,0,W,H,'#1a2a1a');
-    drawTextCenter('回 家 路',120,'#aaccaa',20);
-    drawTextCenter('The Way Home',148,'#6a8a6a',10);
-    drawTextCenter('穿过10条走廊，安全回家',180,'#8a8a7a',9);
-    drawTextCenter('发现异常 → 回头 (←)',200,'#7a7a6a',8);
-    drawTextCenter('一切正常 → 前进 (→)',214,'#7a7a6a',8);
-    drawTextCenter('按任意键开始',260,'#aaaaaa',10);
-    // Draw a small player preview
-    drawPlayer(230);
-  }
-  else if(state==='playing'){
-    drawCorridor();
-    drawPlayer(playerX);
-
-    // Auto-walk
-    stepTimer+=dt;
-    if(stepTimer>180){stepTimer=0;sfxStep();}
-    walkTimer+=dt;
-    if(walkTimer>150){walkTimer=0;walkFrame=(walkFrame+1)%3;}
-    playerX+=dt*0.06;
-
-    // UI
-    drawRect(0,0,100,16,'rgba(0,0,0,0.6)');
-    drawText('走廊 '+corridor+'/10',4,12,'#ddd',10);
-
-    drawRect(0,H-16,W,16,'rgba(0,0,0,0.5)');
-    drawText('→ 继续前进  |  ← 回头离开',100,H-4,'#aaa',9);
-
-    // Reached end
-    if(playerX>=W-50){
-      playerX=W-50;
-      state='decision';
+    if (isMoving) {
+      frameTimer++;
+      if (frameTimer >= 8) { frameTimer = 0; playerFrame = (playerFrame + 1) % 3; }
+      playFootstep();
+    } else {
+      frameTimer = 0; playerFrame = 0;
     }
 
-    // Message overlay
-    if(msgTimer>0){
-      msgTimer--;
-      drawRect(W/2-100,H/2-14,200,28,'rgba(0,0,0,0.7)');
-      drawTextCenter(msgText,H/2+4,'#aaddaa',10);
+    playerX += dx;
+
+    // Check boundaries - exit corridor
+    if (playerX < -20) {
+      // Exited LEFT = turn back
+      if (isAnomaly) {
+        // Correct!
+        playSfx(true);
+        currentCorridor++;
+        if (currentCorridor > TOTAL_CORRIDORS) {
+          startFade(() => { gameState = 'win'; });
+        } else {
+          startFade(() => { setupCorridor(currentCorridor); gameState = 'fadein'; fadeAlpha = 1; fadeDir = -1; });
+        }
+        gameState = 'fade';
+      } else {
+        // Wrong
+        playSfx(false);
+        startFade(() => { currentCorridor = 1; setupCorridor(1); gameState = 'gameover'; });
+        gameState = 'fade';
+      }
+    } else if (playerX > mapW + 20) {
+      // Exited RIGHT = continue forward
+      if (!isAnomaly) {
+        playSfx(true);
+        currentCorridor++;
+        if (currentCorridor > TOTAL_CORRIDORS) {
+          startFade(() => { gameState = 'win'; });
+        } else {
+          startFade(() => { setupCorridor(currentCorridor); gameState = 'fadein'; fadeAlpha = 1; fadeDir = -1; });
+        }
+        gameState = 'fade';
+      } else {
+        playSfx(false);
+        startFade(() => { currentCorridor = 1; setupCorridor(1); gameState = 'gameover'; });
+        gameState = 'fade';
+      }
     }
   }
-  else if(state==='decision'){
-    drawCorridor();
-    drawPlayer(playerX);
 
-    drawRect(0,0,100,16,'rgba(0,0,0,0.6)');
-    drawText('走廊 '+corridor+'/10',4,12,'#ddd',10);
+  // Fade transitions
+  if (gameState === 'fade') {
+    fadeAlpha += 0.04;
+    if (fadeAlpha >= 1) { fadeAlpha = 1; if (nextAction) nextAction(); nextAction = null; }
+  }
+  if (gameState === 'fadein') {
+    fadeAlpha -= 0.04;
+    if (fadeAlpha <= 0) { fadeAlpha = 0; gameState = 'playing'; }
+  }
+}
 
-    // Decision prompt
-    drawRect(W/2-140,H/2-20,280,40,'rgba(0,0,0,0.8)');
-    drawRect(W/2-140,H/2-20,280,2,'#aaa');
-    drawRect(W/2-140,H/2+18,280,2,'#aaa');
-    drawTextCenter('继续前进？(→)    还是回头？(←)',H/2+4,'#eee',10);
-  }
-  else if(state==='gameover'){
-    drawCorridor();
-    drawPlayer(playerX);
-    drawRect(0,0,W,H,'rgba(20,0,0,0.7)');
-    drawTextCenter('异常未被发现！',130,'#ff6666',16);
-    drawTextCenter(msgText,160,'#cc8888',10);
-    drawTextCenter('回到起点...',190,'#aa6666',10);
-    drawTextCenter('按任意键重新开始',240,'#888',9);
-  }
-  else if(state==='win'){
-    drawRect(0,0,W,H,'#1a2a1a');
-    drawTextCenter('🏠',100,'#fff',30);
-    drawTextCenter('你安全到家了！',150,'#aaffaa',18);
-    drawTextCenter('恭喜通关！',180,'#88cc88',12);
-    drawTextCenter('按任意键重新开始',240,'#888',9);
+function draw() {
+  ctx.imageSmoothingEnabled = false;
+
+  if (gameState === 'loading') {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, gameW, GAME_H);
+    ctx.fillStyle = '#888';
+    ctx.font = '16px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('加载中... ' + loadedCount + '/' + imgNames.length, gameW / 2, GAME_H / 2);
+    return;
   }
 
+  if (gameState === 'start') {
+    ctx.fillStyle = '#0a0a12';
+    ctx.fillRect(0, 0, gameW, GAME_H);
+    ctx.fillStyle = '#c8c8d0';
+    ctx.font = 'bold 48px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('《回家路》', gameW / 2, GAME_H / 2 - 50);
+    ctx.font = '18px monospace';
+    ctx.fillStyle = '#888';
+    ctx.fillText('按任意键开始', gameW / 2, GAME_H / 2 + 10);
+    ctx.font = '14px monospace';
+    ctx.fillStyle = '#666';
+    ctx.fillText('发现异常按A回头，正常按D前进', gameW / 2, GAME_H / 2 + 45);
+    ctx.fillText('A/D 或 触摸屏幕左右移动', gameW / 2, GAME_H / 2 + 68);
+    return;
+  }
+
+  if (gameState === 'gameover') {
+    ctx.fillStyle = '#1a0000';
+    ctx.fillRect(0, 0, gameW, GAME_H);
+    ctx.fillStyle = '#cc4444';
+    ctx.font = 'bold 32px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('你没有发现异常！回到起点...', gameW / 2, GAME_H / 2 - 20);
+    ctx.font = '18px monospace';
+    ctx.fillStyle = '#888';
+    ctx.fillText('按任意键重新开始', gameW / 2, GAME_H / 2 + 30);
+    return;
+  }
+
+  if (gameState === 'win') {
+    ctx.fillStyle = '#0a1a0a';
+    ctx.fillRect(0, 0, gameW, GAME_H);
+    ctx.fillStyle = '#88cc88';
+    ctx.font = 'bold 40px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('你安全到家了！🏠', gameW / 2, GAME_H / 2 - 20);
+    ctx.font = '18px monospace';
+    ctx.fillStyle = '#888';
+    ctx.fillText('按任意键再玩一次', gameW / 2, GAME_H / 2 + 30);
+    return;
+  }
+
+  // Playing / fade / fadein
+  if (currentMapImg) {
+    // Camera: center on player
+    const camX = Math.max(0, Math.min(playerX - gameW / 2, mapW - gameW));
+    // Draw map
+    ctx.drawImage(currentMapImg, -camX, 0, mapW, GAME_H);
+
+    // Draw player at screen position
+    const screenX = playerX - camX;
+    const playerGroundY = GAME_H - 90; // feet position
+    // Flip if facing left
+    ctx.save();
+    if (playerFacing === -1) {
+      ctx.translate(screenX, 0);
+      ctx.scale(-1, 1);
+      drawPlayer(0, playerGroundY - 64, 1, playerFrame);
+    } else {
+      drawPlayer(screenX, playerGroundY - 64, 1, playerFrame);
+    }
+    ctx.restore();
+
+    // UI: corridor counter
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(8, 8, 120, 28);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 16px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('走廊 ' + currentCorridor + '/10', 16, 28);
+
+    // Bottom hint bar
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fillRect(0, GAME_H - 28, gameW, 28);
+    ctx.fillStyle = '#aaa';
+    ctx.font = '13px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('A ← 回头  |  D → 前进', gameW / 2, GAME_H - 9);
+  }
+
+  // Fade overlay
+  if (fadeAlpha > 0) {
+    ctx.fillStyle = 'rgba(0,0,0,' + fadeAlpha + ')';
+    ctx.fillRect(0, 0, gameW, GAME_H);
+  }
+}
+
+function loop() {
+  update();
+  draw();
   requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);
+
+preload();
+loop();
 </script>
 </body>
 </html>
