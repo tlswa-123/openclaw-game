@@ -157,7 +157,8 @@ function startFade(callback) {
 
 // --- Draw Player Sprite ---
 function drawPlayer(screenX) {
-  const spriteKey = playerFacing === 1 ? 'char_walk_right_00001_.png' : 'char_walk_left_00001_.png';
+  // Sprite sheets are swapped: "right" file faces left, "left" file faces right
+  const spriteKey = playerFacing === 1 ? 'char_walk_left_00001_.png' : 'char_walk_right_00001_.png';
   const spriteImg = images[spriteKey];
   if (!spriteImg || !spriteImg.naturalWidth) return;
 
@@ -172,9 +173,8 @@ function drawPlayer(screenX) {
   // Bobbing motion while walking
   const bob = isMoving ? Math.sin(tickCount * 0.3) * 2.5 : 0;
 
-  // Position: bottom 30% of sprite below canvas edge
-  // So the top of the sprite is at: GAME_H - destH * 0.7
-  const destY = GAME_H - destH * 0.7 + bob;
+  // Position: moved up, bottom 40% of sprite below canvas edge
+  const destY = GAME_H - destH * 0.6 + bob;
   const destX = screenX - destW / 2;
 
   ctx.drawImage(spriteImg, sx, 0, frameWidth, frameHeight, destX, destY, destW, destH);
