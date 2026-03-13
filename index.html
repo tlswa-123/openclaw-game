@@ -23,7 +23,7 @@ const TOTAL_CORRIDORS = 10;
 const ANOMALY_CHANCE = 0.6;
 
 // --- State ---
-let gameState = 'loading'; // loading, start, playing, fadein, gameover, win
+let gameState = 'loading';
 let currentCorridor = 1;
 let isAnomaly = false;
 let currentMapImg = null;
@@ -33,17 +33,18 @@ let playerFrame = 0;
 let frameTimer = 0;
 let isMoving = false;
 let fadeAlpha = 0;
-let fadeDir = 0; // 1=fading out, -1=fading in
+let fadeDir = 0;
 let nextAction = null;
 let gameW = 0;
 let mapW = 0;
 let keys = {};
-let touchSide = 0; // -1 left, 1 right, 0 none
+let touchSide = 0;
 let messageText = '';
 let messageTimer = 0;
 let ambientNode = null;
 let ambientGain = null;
 let audioCtx = null;
+let tickCount = 0;
 
 // --- Images ---
 const imgNames = [
@@ -51,7 +52,9 @@ const imgNames = [
   'corridor_anomaly1_00001_.png','corridor_anomaly2_00001_.png','corridor_anomaly3_00001_.png',
   'corridor_anomaly4_00001_.png','corridor_anomaly5_00001_.png','corridor_anomaly6_00001_.png',
   'corridor_anomaly7_00001_.png','corridor_anomaly8_00001_.png','corridor_anomaly9_00001_.png',
-  'corridor_anomaly10_00001_.png'
+  'corridor_anomaly10_00001_.png',
+  'char_walk_right_00001_.png',
+  'char_walk_left_00001_.png'
 ];
 const images = {};
 let loadedCount = 0;
@@ -75,7 +78,6 @@ function initAudio() {
 
 function startAmbient() {
   if (!audioCtx || ambientNode) return;
-  // Eerie drone using oscillators
   ambientGain = audioCtx.createGain();
   ambientGain.gain.value = 0.06;
   ambientGain.connect(audioCtx.destination);
@@ -143,7 +145,6 @@ function setupCorridor(corridorNum) {
     }
   }
   mapW = currentMapImg.naturalWidth;
-  // Player starts at center of map
   playerX = mapW / 2;
   playerFacing = 1;
   playerFrame = 0;
@@ -154,89 +155,29 @@ function startFade(callback) {
   fadeAlpha = 0; fadeDir = 1; nextAction = callback;
 }
 
-// --- Player Drawing (pixel art schoolgirl ~64px tall) ---
-function drawPixelRect(x, y, w, h, color) {
-  ctx.fillStyle = color;
-  ctx.fillRect(Math.round(x), Math.round(y), w, h);
-}
+// --- Draw Player Sprite ---
+function drawPlayer(screenX) {
+  const spriteKey = playerFacing === 1 ? 'char_walk_right_00001_.png' : 'char_walk_left_00001_.png';
+  const spriteImg = images[spriteKey];
+  if (!spriteImg || !spriteImg.naturalWidth) return;
 
-function drawPlayer(sx, sy, facing, frame) {
-  // ~64px tall schoolgirl: hair, face, uniform, skirt, legs
-  const f = facing;
-  const x = Math.round(sx);
-  const y = Math.round(sy);
-  // Walking bob
-  const bob = isMoving ? [0, -2, 0][frame % 3] : 0;
-  const legOff = isMoving ? [0, 3, 0][frame % 3] : 0;
-  const legOff2 = isMoving ? [3, 0, 3][frame % 3] : 0;
+  const frameWidth = spriteImg.naturalWidth / 4;
+  const frameHeight = spriteImg.naturalHeight;
+  const sx = playerFrame * frameWidth;
 
-  // Shadow
-  drawPixelRect(x - 10, y + 64, 20, 3, 'rgba(0,0,0,0.2)');
+  // Character height = 50% of canvas
+  const destH = GAME_H / 2; // 180px
+  const destW = destH * (frameWidth / frameHeight);
 
-  // Hair (dark brown/black) - back layer
-  drawPixelRect(x - 12, y + bob - 2, 24, 22, '#1a1a2e');
-  // Long hair sides
-  drawPixelRect(x - 13, y + bob + 10, 6, 20, '#1a1a2e');
-  drawPixelRect(x + 7, y + bob + 10, 6, 20, '#1a1a2e');
+  // Bobbing motion while walking
+  const bob = isMoving ? Math.sin(tickCount * 0.3) * 2.5 : 0;
 
-  // Face (skin)
-  drawPixelRect(x - 8, y + bob + 6, 16, 14, '#f5d0a9');
-  // Eyes
-  if (f === 1) {
-    drawPixelRect(x + 1, y + bob + 11, 4, 4, '#1a1a2e');
-    drawPixelRect(x + 2, y + bob + 12, 2, 2, '#fff');
-    drawPixelRect(x - 5, y + bob + 11, 4, 4, '#1a1a2e');
-    drawPixelRect(x - 4, y + bob + 12, 2, 2, '#fff');
-  } else {
-    drawPixelRect(x - 5, y + bob + 11, 4, 4, '#1a1a2e');
-    drawPixelRect(x - 4, y + bob + 12, 2, 2, '#fff');
-    drawPixelRect(x + 1, y + bob + 11, 4, 4, '#1a1a2e');
-    drawPixelRect(x, y + bob + 12, 2, 2, '#fff');
-  }
-  // Mouth
-  drawPixelRect(x - 2, y + bob + 17, 4, 1, '#c97060');
+  // Position: bottom 30% of sprite below canvas edge
+  // So the top of the sprite is at: GAME_H - destH * 0.7
+  const destY = GAME_H - destH * 0.7 + bob;
+  const destX = screenX - destW / 2;
 
-  // Hair bangs (front)
-  drawPixelRect(x - 10, y + bob - 2, 20, 8, '#1a1a2e');
-  drawPixelRect(x - 12, y + bob + 2, 4, 6, '#1a1a2e');
-  drawPixelRect(x + 8, y + bob + 2, 4, 6, '#1a1a2e');
-
-  // Neck
-  drawPixelRect(x - 3, y + bob + 20, 6, 3, '#f5d0a9');
-
-  // Uniform top (white shirt with sailor collar)
-  drawPixelRect(x - 12, y + bob + 22, 24, 16, '#e8e8f0');
-  // Collar (navy)
-  drawPixelRect(x - 12, y + bob + 22, 24, 5, '#2d3a6e');
-  drawPixelRect(x - 6, y + bob + 22, 12, 8, '#e8e8f0');
-  // Ribbon (red)
-  drawPixelRect(x - 2, y + bob + 24, 4, 6, '#cc3333');
-
-  // Arms
-  const armY = y + bob + 26;
-  drawPixelRect(x - 15, armY + legOff, 4, 14, '#e8e8f0');
-  drawPixelRect(x + 11, armY + legOff2, 4, 14, '#e8e8f0');
-  // Hands
-  drawPixelRect(x - 15, armY + 14 + legOff, 4, 3, '#f5d0a9');
-  drawPixelRect(x + 11, armY + 14 + legOff2, 4, 3, '#f5d0a9');
-
-  // Skirt (navy pleated)
-  drawPixelRect(x - 13, y + bob + 38, 26, 10, '#2d3a6e');
-  drawPixelRect(x - 14, y + bob + 42, 28, 6, '#2d3a6e');
-  // Pleat lines
-  for (let i = -10; i <= 10; i += 5) {
-    drawPixelRect(x + i, y + bob + 39, 1, 9, '#222a55');
-  }
-
-  // Legs
-  drawPixelRect(x - 8, y + bob + 48 + legOff, 5, 12, '#f5d0a9');
-  drawPixelRect(x + 3, y + bob + 48 + legOff2, 5, 12, '#f5d0a9');
-  // Socks (white)
-  drawPixelRect(x - 8, y + bob + 55 + legOff, 5, 5, '#fff');
-  drawPixelRect(x + 3, y + bob + 55 + legOff2, 5, 5, '#fff');
-  // Shoes (brown)
-  drawPixelRect(x - 9, y + bob + 60 + legOff, 7, 4, '#5c3a1e');
-  drawPixelRect(x + 2, y + bob + 60 + legOff2, 7, 4, '#5c3a1e');
+  ctx.drawImage(spriteImg, sx, 0, frameWidth, frameHeight, destX, destY, destW, destH);
 }
 
 // --- Resize ---
@@ -285,6 +226,8 @@ canvas.addEventListener('touchcancel', e => { touchSide = 0; });
 
 // --- Game Loop ---
 function update() {
+  tickCount++;
+
   if (gameState === 'playing') {
     let dx = 0;
     if (keys['a'] || keys['arrowleft'] || touchSide === -1) dx -= PLAYER_SPEED;
@@ -296,7 +239,7 @@ function update() {
 
     if (isMoving) {
       frameTimer++;
-      if (frameTimer >= 8) { frameTimer = 0; playerFrame = (playerFrame + 1) % 3; }
+      if (frameTimer >= 8) { frameTimer = 0; playerFrame = (playerFrame + 1) % 4; }
       playFootstep();
     } else {
       frameTimer = 0; playerFrame = 0;
@@ -306,9 +249,7 @@ function update() {
 
     // Check boundaries - exit corridor
     if (playerX < -20) {
-      // Exited LEFT = turn back
       if (isAnomaly) {
-        // Correct!
         playSfx(true);
         currentCorridor++;
         if (currentCorridor > TOTAL_CORRIDORS) {
@@ -318,13 +259,11 @@ function update() {
         }
         gameState = 'fade';
       } else {
-        // Wrong
         playSfx(false);
         startFade(() => { currentCorridor = 1; setupCorridor(1); gameState = 'gameover'; });
         gameState = 'fade';
       }
     } else if (playerX > mapW + 20) {
-      // Exited RIGHT = continue forward
       if (!isAnomaly) {
         playSfx(true);
         currentCorridor++;
@@ -342,7 +281,6 @@ function update() {
     }
   }
 
-  // Fade transitions
   if (gameState === 'fade') {
     fadeAlpha += 0.04;
     if (fadeAlpha >= 1) { fadeAlpha = 1; if (nextAction) nextAction(); nextAction = null; }
@@ -411,24 +349,11 @@ function draw() {
 
   // Playing / fade / fadein
   if (currentMapImg) {
-    // Camera: center on player
     const camX = Math.max(0, Math.min(playerX - gameW / 2, mapW - gameW));
-    // Draw map
     ctx.drawImage(currentMapImg, -camX, 0, mapW, GAME_H);
 
-    // Draw player at screen position
     const screenX = playerX - camX;
-    const playerGroundY = GAME_H - 90; // feet position
-    // Flip if facing left
-    ctx.save();
-    if (playerFacing === -1) {
-      ctx.translate(screenX, 0);
-      ctx.scale(-1, 1);
-      drawPlayer(0, playerGroundY - 64, 1, playerFrame);
-    } else {
-      drawPlayer(screenX, playerGroundY - 64, 1, playerFrame);
-    }
-    ctx.restore();
+    drawPlayer(screenX);
 
     // UI: corridor counter
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
